@@ -8,7 +8,7 @@ n_out = 1;
 g_cc = 1.2;
 if exist('network_params','var') && isstruct(network_params), fields = fieldnames(network_params);
     for i=1:numel(fields), eval([fields{i} '= network_params.(fields{i});']); end; end
-tau_c = 10*ones(n_c,1);
+tau_c = 20*ones(n_c,1);
 
 %% learning_parameters
 train_in = false;
@@ -18,7 +18,7 @@ fb_type = 'random';
 eta_out = 0.1;
 eta_cc = 0.1;
 eta_in = 0.1;
-ntrls = 30000;
+ntrls = 200000;
 algorithm = 'rflo';
 online_learning = true;
 if exist('learning_params','var') && isstruct(learning_params), fields = fieldnames(learning_params);
@@ -76,18 +76,19 @@ switch taskname
     case 'firefly'
         n_in = 4; n_out = 2;
         duration = 700; pulseduration = 50; rampduration = 50;
-        nconds = 6;
+        nconds = 10;
         x_in = 0.0*ones(duration, n_in, nconds);
         y_out = 0.0*ones(duration, n_out, nconds);
         
-        % define inputs
-        x_amp = [0.0 0.5 -0.5 0.0 1.0 -1.0]; y_amp = [0.5 0.5 0.5 1.0 1.0 1.0];
+        %% define inputs
+        x_amp = [0.0 0.5 -0.5 0.0 1.0 -1.0 0.5 -0.5 1.0 -1.0]; 
+        y_amp = [0.5 0.5 0.5 1.0 1.0 1.0 1.0 1.0 0.5 0.5];
         for k=1:nconds
             x_in(1:pulseduration,1,k) = x_amp(k); % firefly x-coord
             x_in(1:pulseduration,2,k) = y_amp(k); % firefly y-coord
         end
         
-        % define output
+        %% define output
         for k=1:nconds
             delay_x = 0; delay_y = 0;
             if abs(x_amp(k))>0, delay_x = 500*(abs(x_amp(k)) - 0.1); end
@@ -99,6 +100,18 @@ switch taskname
                 (pulseduration + rampduration + delay_x + pulseduration),1,k) = -2.0*sign(x_amp(k));
             y_out((pulseduration + rampduration + delay_y):...
                 (pulseduration + rampduration + delay_y + pulseduration),2,k) = -2.0*sign(y_amp(k));
+        end
+        
+        % define filter
+        sig = 20; %filter width
+        sz = 100; %filter size
+        t2 = linspace(-sz/2, sz/2, sz);
+        h = exp(-t2.^2/(2*sig^2));
+        h = h/sum(h); % normalise filter to ensure area under the graph of the data is not altered
+        for i=1:n_out
+            for k=1:nconds
+                y_out(:,i,k) = conv(squeeze(y_out(:,i,k)),h,'same');
+            end
         end
         
 end
