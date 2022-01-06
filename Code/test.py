@@ -81,28 +81,14 @@ def compute_roc(X_tars, X_stops, maxrewardwin=4, npermutations=100):
     return prob_correct, prob_shuffled, auc
 
 
-def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
-          rand_tar=True, algo='Adam', Nepochs=10000, lr=1e-3, learningsites=('J'), seed=1, minerr=1e-15):
+def test(net, task, plant, algo, learning, Nepochs=1000, seed=1):
 
     # set random seed
     npr.seed(seed)
 
-    # sites
+    # set grad to False
     sites = ('ws', 'J', 'wr')
-
-    # instantiate model
-    net = Network(arch, N, S, R, seed=seed)
-    task = Task(task, num_tar=num_tar, rand_tar=rand_tar,
-                lambda_u=0.5, lambda_du=1e-2, lambda_v=10, lambda_h=1e-7, lambda_dh=5e-4, seed=seed)
-    plant = Plant('joystick', seed=seed)
-    algo = Algorithm(algo, Nepochs, lr)
-
-    # convert to tensor
-    for site in sites:
-        if site in learningsites:
-            setattr(net, site, torch.tensor(getattr(net, site), requires_grad=True))
-        else:
-            setattr(net, site, torch.tensor(getattr(net, site), requires_grad=False))
+    net.J.requires_grad = False
 
     # frequently used vars
     dt, NT, NT_on, NT_ramp, NT_stop, N, S, R = \
@@ -113,35 +99,26 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
     ou_param_1 = np.exp(-dt / plant.noise_corr_time)
     ou_param_2 = np.sqrt(1 - ou_param_1 ** 2)
 
-    # track variables during learning
-    learning = {'epoch': [], 'J0': [], 'mses': [], 'u_regs': [], 'du_regs': [],
-                'v_regs': [], 'h_regs': [],  'dh_regs': [], 'snr_mse': [], 'lr': []}
-
-    # optimizer
-    opt = None
-    if algo.name == 'Adam':
-        opt = torch.optim.Adam([getattr(net, site) for site in sites], lr=algo.lr)
-
     # random initialization of hidden state
-    z0 = npr.randn(N, 1)  # hidden state (potential)
-    net.z0 = z0  # save
+    z0 = net.z0     # hidden state (potential)
     h0 = net.f(z0)  # hidden state (rate)
-    stoplearning = False
 
     # initial noise
     noise = torch.as_tensor(npr.randn(1, R).astype(np.float32)) * plant.process_noise
 
-    # save initial weights
-    learning['J0'] = net.J.detach().clone()
-    reg = LinearRegression()
-
     # save target and stopping positions
     tars, stops = [], []
-    # save loss, mse, and regularization terms
-    losses, mses, u_regs, du_regs, v_regs, h_regs, dh_regs = [], [], [], [], [], [], []
+
+    # save tensors for plotting
+    sa = torch.zeros(Nepochs, NT, S)  # save the inputs for each time bin for plotting
+    ha = torch.zeros(Nepochs, NT, N)  # save the hidden states for each time bin for plotting
+    ua = torch.zeros(Nepochs, NT, R)  # acceleration
+    va = torch.zeros(Nepochs, NT, R)  # velocity
+    xa = torch.zeros(Nepochs, NT, R)  # position
+    maxNT, NTlist = 0, []
 
     # train
-    for ei in range(algo.Nepochs):
+    for ei in range(Nepochs):
 
         # pick a condition
         if task.rand_tar:
@@ -158,6 +135,7 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
         xstar = torch.tensor(np.pad(xstar, NT_stop, 'edge'))
         ystar = torch.tensor(np.pad(ystar, NT_stop, 'edge'))
         NT = len(xstar)
+        maxNT = np.max((NT, maxNT))
 
         # initialize activity
         z, h = torch.as_tensor(z0), torch.as_tensor(h0)
@@ -165,15 +143,7 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
         s = torch.tensor(task.s)  # input
 
         # save tensors for plotting
-        sa = torch.zeros(NT, S)  # save the inputs for each time bin for plotting
-        ha = torch.zeros(NT, N)  # save the hidden states for each time bin for plotting
-        ua = torch.zeros(NT, R)  # acceleration
-        va = torch.zeros(NT, R)  # velocity
-        xa = torch.zeros(NT, R)  # position
         na = torch.as_tensor(npr.randn(NT, R).astype(np.float32)) * plant.process_noise
-
-        # errors
-        err = torch.zeros(NT, R)     # error in angular acceleration
 
         for ti in range(NT):
             # network update
@@ -191,66 +161,15 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
             v_true, v_sense, x, phi = plant.forward(u, v_true, x, phi, noise.T, dt)  # actual state
 
             # save values for plotting
-            ha[ti], ua[ti], na[ti], sa[ti], va[ti], xa[ti] = h.T, u.T, noise, s.T[ti], v_true.T, x.T
-
-            # error
-            # err[ti] = torch.as_tensor(task.ustar[ti]) - u.squeeze(dim=1)
-            err[ti] = torch.hstack((xstar[ti], ystar[ti])) - x.squeeze(dim=1) if (ti > (NT - NT_stop) or ti < (NT_on)) \
-                else 0
+            ha[ei, ti], ua[ei, ti], na[ti], sa[ei, ti], va[ei, ti], xa[ei, ti] = h.T, u.T, noise, s.T[ti], v_true.T, x.T
 
         # save target and stopping positions
-        x_stop, y_stop = xa[-1, 0].item(), xa[-1, 1].item()
+        x_stop, y_stop = xa[ei, ti, 0].item(), xa[ei, ti, 1].item()
         tars.append([x_tar, y_tar, np.sqrt(x_tar ** 2 + y_tar ** 2), np.arctan2(x_tar, y_tar)])     # x, y, dist, angle
         stops.append([x_stop, y_stop, np.sqrt(x_stop ** 2 + y_stop ** 2), np.arctan2(x_stop, y_stop)])
+        prob_correct, prob_shuffled, auc = compute_roc(np.array(tars)[:, :2], np.array(stops)[:, :2])
+        NTlist.append(NT)
 
-        # print loss
-        mse, u_reg, du_reg, v_reg, h_reg, dh_reg = task.loss(err, ua, va, ha, dt)
-        loss = mse + u_reg + du_reg + v_reg + h_reg + dh_reg
+        print('\r' + str(ei + 1) + '/' + str(Nepochs), end='')
 
-        # save loss, mse, and regularization terms
-        losses.append(loss.item())
-        mses.append(mse.item())
-        u_regs.append(u_reg.item())
-        du_regs.append(du_reg.item())
-        v_regs.append(v_reg.item())
-        h_regs.append(h_reg.item())
-        dh_regs.append(dh_reg.item())
-
-        print('\r' + str(ei + 1) + '/' + str(algo.Nepochs) + '\t Err:' + str(loss.item())
-              + '\t MSE:' + str(mse.item()), end='')
-
-        # do BPTT
-        loss.backward()
-        opt.step()
-        opt.zero_grad()
-
-        # update learning rate
-        update_every = int(1e3)
-        if ei+1 in np.arange(1, Nepochs, update_every) or ei == Nepochs:
-            if ei >= update_every:
-                reg.fit(np.arange(update_every).reshape((-1, 1)), np.log(mses[-update_every:]))
-                learning['snr_mse'].append(reg.score(np.arange(update_every).reshape((-1, 1)),
-                                                     np.log(mses[-update_every:])))
-                if learning['snr_mse'][-1] < 0.05: opt.param_groups[0]['lr'] *= .5   # reduce learning rate
-                _, _, auc = compute_roc(np.array(tars)[-update_every:, :2], np.array(stops)[-update_every:, :2])
-                stoplearning = np.max(mses[-10:]) < minerr
-                # stoplearning = auc > 0.85
-            learning['lr'].append(opt.param_groups[0]['lr'])
-            learning['epoch'].append(ei)
-
-        # stop learning if criterion is met
-        if stoplearning:
-            break
-
-    # save mse list and cond list
-    learning['mses'].append(mses)
-    learning['u_regs'].append(u_regs)
-    learning['du_regs'].append(du_regs)
-    learning['v_regs'].append(v_regs)
-    learning['h_regs'].append(h_regs)
-    learning['dh_regs'].append(dh_regs)
-
-    return net, task, algo, plant, learning
-
-# ha_norm = (ha / torch.tile(torch.max(abs(ha), dim=0)[0], dims=(271, 1))).T.detach().numpy()
-# plt.imshow((ha / torch.tile(torch.max(abs(ha), dim=0)[0], dims=(271, 1))).T.detach().numpy())
+    return tars, stops, prob_correct, prob_shuffled, auc, NTlist, sa, ha, ua, va, xa

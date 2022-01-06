@@ -34,15 +34,18 @@ class Network:
 
 
 class Task:
-    def __init__(self, name='firefly', duration=30, rand_tar=False, num_tar=None, rand_init=False, dt=0.1, seed=1):
+    def __init__(self, name='firefly', duration=40, rand_tar=False, num_tar=None, rand_init=False, dt=0.1,
+                 lambda_u=0, lambda_du=0, lambda_v=0, lambda_h=0, lambda_dh=0, seed=1):
         self.name = name
         npr.seed(seed)
         self.rand_init = rand_init
         NT = int(duration / dt)
+        self.lambda_u, self.lambda_du, self.lambda_v, self.lambda_h, self.lambda_dh = \
+            lambda_u, lambda_du, lambda_v, lambda_h, lambda_dh
         # task parameters
         if self.name == 'firefly':
             self.T, self.dt, self.NT = duration, dt, NT
-            self.duration_tar, self.duration_ramp, self.duration_stop = int(3 / dt), int(3 / dt), int(3 / dt)
+            self.duration_tar, self.duration_ramp, self.duration_stop = int(3 / dt), int(3 / dt), int(5 / dt)
             self.num_tar = num_tar
             self.rand_tar = rand_tar
             self.dist_bounds = (1, 4)
@@ -60,13 +63,18 @@ class Task:
                 self.s[0, cue, :int(NT/4)] = val
                 self.ustar[(int(NT/4) + int(2/dt)):, cue, 0] = val
 
-    def loss(self, err):
+    def loss(self, err, ut, vt, ht, dt):
         mse = (err ** 2).mean() / 2
-        return mse
+        u_reg = self.lambda_u * ((ut ** 2).sum(dim=-1).mean() + (ut[0] ** 2).sum(dim=-1))
+        du_reg = self.lambda_du * ((torch.diff(ut, dim=0) / dt) ** 2).sum(dim=-1).mean()
+        v_reg = self.lambda_v * (vt[-self.duration_stop:, :] ** 2).sum(dim=-1).mean()
+        h_reg = self.lambda_h * ((abs(ht)).sum(dim=-1) ** 2).mean()
+        dh_reg = self.lambda_dh * ((torch.diff(ht, dim=0) / dt) ** 2).sum(dim=-1).mean()
+        return mse, u_reg, du_reg, v_reg, h_reg, dh_reg
 
 
 class Plant:
-    def __init__(self, name='joystick', sensory_noise=0.01, process_noise=0.2, seed=1):
+    def __init__(self, name='joystick', sensory_noise=0.2, process_noise=0.2, seed=1):
         self.name = name
         npr.seed(seed)
         if self.name == 'joystick':
@@ -77,16 +85,25 @@ class Plant:
             self.v_init = [0.0, 0.0]  # initial position of endpoint
 
     # plant dynamics (actual dynamics with noise)
-    def forward(self, u, v, process_noise, dt):
+    def forward(self, u, v, x, phi, process_noise, dt):
         # physics
         v_true, v_sense = [], []
         if self.name == 'joystick':
+            # true velocity
             accel = (1 / 10) * u * (1 + process_noise)  # to compensate for the scaling factor in plan_traj()
             v_true = v + accel * dt
+            # sensed velocity
             sensory_noise = torch.as_tensor(npr.randn(len(accel), 1)) * self.sensory_noise
             v_sense = v_true * (1 + sensory_noise)
+            # true position
+            x = x + v_true[0] * torch.vstack((torch.sin(phi), torch.cos(phi))) * dt
+            phi = phi + v_true[1] * dt
+            if phi > np.pi:
+                phi = phi - 2 * torch.tensor(np.pi)
+            elif phi <= -np.pi:
+                phi = phi + 2 * torch.tensor(np.pi)
         # return
-        return v_true, v_sense
+        return v_true, v_sense, x, phi
 
     # predicted plant dynamics (predicted dynamics unaware of noise)
     def forward_predict(self, u, v, w, dt):
