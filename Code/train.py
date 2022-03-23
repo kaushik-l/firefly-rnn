@@ -53,11 +53,11 @@ def gen_traj(v, dt):
     return x, y, phi
 
 
-def compute_roc(X_tars, X_stops, maxrewardwin=4, npermutations=100):
+def compute_roc(X_tars, X_stops, maxrewardwin=6, npermutations=100):
 
     # initialise
     ntrials = len(X_tars)
-    binedges = np.linspace(0, maxrewardwin, 21)
+    binedges = np.linspace(0, maxrewardwin, 25)
     nbins = len(binedges) - 1
     prob_correct = np.zeros(nbins+1)
     prob_shuffled = np.zeros((npermutations, nbins+1))
@@ -81,8 +81,8 @@ def compute_roc(X_tars, X_stops, maxrewardwin=4, npermutations=100):
     return prob_correct, prob_shuffled, auc
 
 
-def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
-          rand_tar=True, algo='Adam', Nepochs=10000, lr=1e-3, learningsites=('J'), seed=1, minerr=1e-15):
+def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None, rand_tar=True, db=(1, 6), sn=.2, pn=.2,
+          feed_pos=False, feed_belief=False, algo='Adam', Nepochs=10000, lr=1e-3, learningsites=('J'), seed=1, minerr=1e-15):
 
     # set random seed
     npr.seed(seed)
@@ -91,10 +91,15 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
     sites = ('ws', 'J', 'wr')
 
     # instantiate model
-    net = Network(arch, N, S, R, seed=seed)
-    task = Task(task, num_tar=num_tar, rand_tar=rand_tar,
-                lambda_u=0.5, lambda_du=1e-2, lambda_v=10, lambda_h=1e-7, lambda_dh=5e-4, seed=seed)
-    plant = Plant('joystick', seed=seed)
+    if feed_pos:
+        net = Network(arch, N, S+2, R, seed=seed)
+    elif feed_belief:
+        net = Network(arch, N, S+2, R+2, seed=seed)
+    else:
+        net = Network(arch, N, S, R, seed=seed)
+    task = Task(task, num_tar=num_tar, rand_tar=rand_tar, dist_bounds=db, feed_pos=feed_pos, feed_belief=feed_belief,
+                lambda_b=0, lambda_u=1e-1, lambda_du=1e-0, lambda_v=10, lambda_h=0, lambda_dh=0, seed=seed)
+    plant = Plant('joystick', sensory_noise=sn, process_noise=pn, seed=seed)
     algo = Algorithm(algo, Nepochs, lr)
 
     # convert to tensor
@@ -115,7 +120,7 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
 
     # track variables during learning
     learning = {'epoch': [], 'J0': [], 'mses': [], 'u_regs': [], 'du_regs': [],
-                'v_regs': [], 'h_regs': [],  'dh_regs': [], 'snr_mse': [], 'lr': []}
+                'v_regs': [], 'h_regs': [],  'dh_regs': [], 'b_regs': [], 'snr_mse': [], 'lr': [], 'auc': []}
 
     # optimizer
     opt = None
@@ -129,7 +134,7 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
     stoplearning = False
 
     # initial noise
-    noise = torch.as_tensor(npr.randn(1, R).astype(np.float32)) * plant.process_noise
+    noise = torch.as_tensor(npr.randn(1, 2).astype(np.float32)) * plant.process_noise
 
     # save initial weights
     learning['J0'] = net.J.detach().clone()
@@ -138,7 +143,7 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
     # save target and stopping positions
     tars, stops = [], []
     # save loss, mse, and regularization terms
-    losses, mses, u_regs, du_regs, v_regs, h_regs, dh_regs = [], [], [], [], [], [], []
+    losses, mses, u_regs, du_regs, v_regs, h_regs, dh_regs, b_regs = [], [], [], [], [], [], [], []
 
     # train
     for ei in range(algo.Nepochs):
@@ -146,12 +151,9 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
         # pick a condition
         if task.rand_tar:
             x_tar, y_tar = gen_tar(task.dist_bounds, task.angle_bounds)
-            a, b, v, w = plan_traj(x_tar, y_tar, task.v_bounds[-1], dt, NT_ramp)
-            task.s[0, :NT_on] = x_tar
-            task.s[1, :NT_on] = y_tar
-            task.ustar = np.zeros_like(task.s[:2, :].T)
-            task.ustar[NT_on:NT_on+len(a)] = np.array([a, b]).T
-            task.ustar = task.ustar[:NT, :]
+            _, _, v, w = plan_traj(x_tar, y_tar, task.v_bounds[-1], dt, NT_ramp)
+            task.s[0, :NT_on] = x_tar * (1 / 10)
+            task.s[1, :NT_on] = y_tar * (1 / 10)
 
         # target trajectory
         xstar, ystar, phistar = gen_traj(torch.as_tensor([v, w]).T, dt)
@@ -161,26 +163,35 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
 
         # initialize activity
         z, h = torch.as_tensor(z0), torch.as_tensor(h0)
-        v_true, v_sense, x, phi = torch.zeros(R, 1), torch.zeros(R, 1), torch.zeros(R, 1), torch.zeros(1)
+        v_true, v_sense, x, phi, x_err, u = \
+            torch.zeros(2, 1), torch.zeros(2, 1), torch.zeros(2, 1), torch.zeros(1), torch.zeros(2, 1), torch.zeros(R, 1)
         s = torch.tensor(task.s)  # input
 
         # save tensors for plotting
         sa = torch.zeros(NT, S)  # save the inputs for each time bin for plotting
         ha = torch.zeros(NT, N)  # save the hidden states for each time bin for plotting
         ua = torch.zeros(NT, R)  # acceleration
-        va = torch.zeros(NT, R)  # velocity
-        xa = torch.zeros(NT, R)  # position
-        na = torch.as_tensor(npr.randn(NT, R).astype(np.float32)) * plant.process_noise
+        va = torch.zeros(NT, 2)  # velocity
+        xa = torch.zeros(NT, 2)  # position
+        ba = torch.zeros(NT, 2)  # belief
+        na = torch.as_tensor(npr.randn(NT, 2).astype(np.float32)) * plant.process_noise
 
         # errors
-        err = torch.zeros(NT, R)     # error in angular acceleration
+        err = torch.zeros(NT, 2)     # error
 
         for ti in range(NT):
             # network update
-            s[(S-R):, ti] = v_sense.flatten()        # sensory feedback in the last two channels
+            if feed_pos:
+                s[2:4, ti] = v_sense.flatten()                                              # sensory feedback
+                s[4:, ti] = (torch.tensor((x_tar, y_tar)) - x.squeeze(dim=1)) * (1 / 10)    # position feedback
+            elif feed_belief:
+                s[2:4, ti] = v_sense.flatten()                                          # sensory feedback
+                s[4:, ti] = 1e-1 * u[2:].T.flatten()                                    # belief feedback
+            else:
+                s[2:, ti] = v_sense.flatten()                                           # sensory feedback
             if net.name == 'ppc':
                 Iin = torch.matmul(net.ws, s[:, ti][:, None])
-                Irec = torch.matmul(net.J, h)  #np.matmul(net.J, h)
+                Irec = torch.matmul(net.J, h)
                 z = Iin + Irec      # potential
 
             # update activity
@@ -188,13 +199,13 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
             u = net.wr.mm(h)  # output
 
             noise = ou_param_1 * noise + ou_param_2 * na[ti]  # noise is OU process
-            v_true, v_sense, x, phi = plant.forward(u, v_true, x, phi, noise.T, dt)  # actual state
+            v_true, v_sense, x, phi = plant.forward(u[:2], v_true, x, phi, noise.T, dt)  # actual state
+            x_err = (torch.tensor((x_tar, y_tar)) - x.squeeze(dim=1)) if feed_belief else 0
 
             # save values for plotting
-            ha[ti], ua[ti], na[ti], sa[ti], va[ti], xa[ti] = h.T, u.T, noise, s.T[ti], v_true.T, x.T
+            ha[ti], ua[ti], na[ti], sa[ti], va[ti], xa[ti], ba[ti] = h.T, u.T, noise, s.T[ti], v_true.T, x.T, x_err
 
             # error
-            # err[ti] = torch.as_tensor(task.ustar[ti]) - u.squeeze(dim=1)
             err[ti] = torch.hstack((xstar[ti], ystar[ti])) - x.squeeze(dim=1) if (ti > (NT - NT_stop) or ti < (NT_on)) \
                 else 0
 
@@ -204,8 +215,8 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
         stops.append([x_stop, y_stop, np.sqrt(x_stop ** 2 + y_stop ** 2), np.arctan2(x_stop, y_stop)])
 
         # print loss
-        mse, u_reg, du_reg, v_reg, h_reg, dh_reg = task.loss(err, ua, va, ha, dt)
-        loss = mse + u_reg + du_reg + v_reg + h_reg + dh_reg
+        mse, u_reg, du_reg, v_reg, h_reg, dh_reg, b_reg = task.loss(err, ua, va, ha, ba, dt)
+        loss = mse + u_reg + du_reg + v_reg + h_reg + dh_reg + b_reg
 
         # save loss, mse, and regularization terms
         losses.append(loss.item())
@@ -215,6 +226,7 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
         v_regs.append(v_reg.item())
         h_regs.append(h_reg.item())
         dh_regs.append(dh_reg.item())
+        b_regs.append(b_reg.item())
 
         print('\r' + str(ei + 1) + '/' + str(algo.Nepochs) + '\t Err:' + str(loss.item())
               + '\t MSE:' + str(mse.item()), end='')
@@ -226,13 +238,14 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
 
         # update learning rate
         update_every = int(1e3)
-        if ei+1 in np.arange(1, Nepochs, update_every) or ei == Nepochs:
+        if ei+1 in np.arange(1, Nepochs, update_every) or ei+1 == Nepochs:
             if ei >= update_every:
                 reg.fit(np.arange(update_every).reshape((-1, 1)), np.log(mses[-update_every:]))
                 learning['snr_mse'].append(reg.score(np.arange(update_every).reshape((-1, 1)),
                                                      np.log(mses[-update_every:])))
-                if learning['snr_mse'][-1] < 0.05: opt.param_groups[0]['lr'] *= .5   # reduce learning rate
+                # if learning['snr_mse'][-1] < 0.05: opt.param_groups[0]['lr'] *= .5   # reduce learning rate
                 _, _, auc = compute_roc(np.array(tars)[-update_every:, :2], np.array(stops)[-update_every:, :2])
+                learning['auc'].append(auc)
                 stoplearning = np.max(mses[-10:]) < minerr
                 # stoplearning = auc > 0.85
             learning['lr'].append(opt.param_groups[0]['lr'])
@@ -249,8 +262,6 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None,
     learning['v_regs'].append(v_regs)
     learning['h_regs'].append(h_regs)
     learning['dh_regs'].append(dh_regs)
+    learning['b_regs'].append(b_regs)
 
     return net, task, algo, plant, learning
-
-# ha_norm = (ha / torch.tile(torch.max(abs(ha), dim=0)[0], dims=(271, 1))).T.detach().numpy()
-# plt.imshow((ha / torch.tile(torch.max(abs(ha), dim=0)[0], dims=(271, 1))).T.detach().numpy())

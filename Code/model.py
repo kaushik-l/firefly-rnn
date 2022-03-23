@@ -34,43 +34,42 @@ class Network:
 
 
 class Task:
-    def __init__(self, name='firefly', duration=40, rand_tar=False, num_tar=None, rand_init=False, dt=0.1,
-                 lambda_u=0, lambda_du=0, lambda_v=0, lambda_h=0, lambda_dh=0, seed=1):
+    def __init__(self, name='firefly', duration=60, rand_tar=False, dist_bounds=(1, 6), num_tar=None, feed_pos=False, feed_belief=False,
+                 rand_init=False, dt=0.1, lambda_b=0, lambda_u=0, lambda_du=0, lambda_v=0, lambda_vmax=0, lambda_h=0, lambda_dh=0, seed=1):
         self.name = name
         npr.seed(seed)
         self.rand_init = rand_init
         NT = int(duration / dt)
-        self.lambda_u, self.lambda_du, self.lambda_v, self.lambda_h, self.lambda_dh = \
-            lambda_u, lambda_du, lambda_v, lambda_h, lambda_dh
+        self.lambda_b, self.lambda_u, self.lambda_du, self.lambda_v, self.lambda_vmax, self.lambda_h, self.lambda_dh = \
+            lambda_b, lambda_u, lambda_du, lambda_v, lambda_vmax, lambda_h, lambda_dh
+        if feed_belief: self.lambda_b = 1e-1
         # task parameters
         if self.name == 'firefly':
             self.T, self.dt, self.NT = duration, dt, NT
             self.duration_tar, self.duration_ramp, self.duration_stop = int(3 / dt), int(3 / dt), int(5 / dt)
             self.num_tar = num_tar
             self.rand_tar = rand_tar
-            self.dist_bounds = (1, 4)
+            self.dist_bounds = dist_bounds
             self.angle_bounds = (-np.pi / 5, np.pi / 5)
             self.v_bounds = (0, 0.2)    # m per tau
-            self.s = 0.0 * np.ones((4, self.num_tar, NT)) if num_tar is not None else 0.0 * np.ones((4, NT))
+            if feed_pos or feed_belief:
+                self.s = 0.0 * np.ones((6, self.num_tar, NT)) if num_tar is not None else 0.0 * np.ones((6, NT))
+            else:
+                self.s = 0.0 * np.ones((4, self.num_tar, NT)) if num_tar is not None else 0.0 * np.ones((4, NT))
             self.ustar = 0.0 * np.ones((NT, self.num_tar, 2)) if num_tar is not None else 0.0 * np.ones((NT, 2))
-        elif self.name == 'Memory':
-            self.num_tar = num_tar
-            self.T, self.dt, self.NT = duration, dt, NT
-            self.s = 0.0 * np.ones((1, self.num_tar, NT))
-            self.ustar = np.nan * np.ones((NT, self.num_tar, 1))
-            for cue in range(self.num_tar):
-                val = ((-1) ** cue) * np.ceil((cue + 1) / 2) / (self.num_tar / 2)
-                self.s[0, cue, :int(NT/4)] = val
-                self.ustar[(int(NT/4) + int(2/dt)):, cue, 0] = val
 
-    def loss(self, err, ut, vt, ht, dt):
+    def loss(self, err, ut, vt, ht, bt, dt):
+        u1 = ut[:, :2]
+        u2 = ut[:, 2:] if self.lambda_b else 0
         mse = (err ** 2).mean() / 2
-        u_reg = self.lambda_u * ((ut ** 2).sum(dim=-1).mean() + (ut[0] ** 2).sum(dim=-1))
+        u_reg = self.lambda_u * ((u1 ** 2).sum(dim=-1).mean() + (u1[0] ** 2).sum(dim=-1))
         du_reg = self.lambda_du * ((torch.diff(ut, dim=0) / dt) ** 2).sum(dim=-1).mean()
-        v_reg = self.lambda_v * (vt[-self.duration_stop:, :] ** 2).sum(dim=-1).mean()
+        v_reg = self.lambda_v * (vt[-self.duration_stop:, :] ** 2).sum(dim=-1).mean() + \
+                1e-2 * (vt[vt[:, 0] > self.v_bounds[-1], 0]).sum() - 1e-2 * (vt[vt[:, 0] < self.v_bounds[0], 0]).sum()
         h_reg = self.lambda_h * ((abs(ht)).sum(dim=-1) ** 2).mean()
         dh_reg = self.lambda_dh * ((torch.diff(ht, dim=0) / dt) ** 2).sum(dim=-1).mean()
-        return mse, u_reg, du_reg, v_reg, h_reg, dh_reg
+        b_reg = self.lambda_b * ((bt - u2) ** 2).mean() / 2
+        return mse, u_reg, du_reg, v_reg, h_reg, dh_reg, b_reg
 
 
 class Plant:

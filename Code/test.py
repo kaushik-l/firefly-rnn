@@ -53,11 +53,11 @@ def gen_traj(v, dt):
     return x, y, phi
 
 
-def compute_roc(X_tars, X_stops, maxrewardwin=4, npermutations=100):
+def compute_roc(X_tars, X_stops, maxrewardwin=6, npermutations=100):
 
     # initialise
     ntrials = len(X_tars)
-    binedges = np.linspace(0, maxrewardwin, 21)
+    binedges = np.linspace(0, maxrewardwin, 25)
     nbins = len(binedges) - 1
     prob_correct = np.zeros(nbins+1)
     prob_shuffled = np.zeros((npermutations, nbins+1))
@@ -81,18 +81,28 @@ def compute_roc(X_tars, X_stops, maxrewardwin=4, npermutations=100):
     return prob_correct, prob_shuffled, auc
 
 
-def test(net, task, plant, algo, learning, Nepochs=1000, seed=1):
+def test(net, task, plant, algo, learning, feed_pos=False, feed_belief=False,
+         db=None, sn=None, pn=None, gain=1, Nepochs=1000, seed=1):
 
     # set random seed
     npr.seed(seed)
 
+    # settings for generalization tests
+    if db is not None:
+        task.dist_bounds = db
+    if pn is not None:
+        plant.process_noise = pn
+    if sn is not None:
+        plant.sensory_noise = sn
+
+
     # set grad to False
     sites = ('ws', 'J', 'wr')
-    net.J.requires_grad = False
+    net.wr.requires_grad = False
 
     # frequently used vars
     dt, NT, NT_on, NT_ramp, NT_stop, N, S, R = \
-        net.dt, task.NT, task.duration_tar, task.duration_ramp, task.duration_stop, net.N, net.S, net.R
+        net.dt, task.NT, task.duration_tar, int(task.duration_ramp / gain), task.duration_stop, net.N, net.S, net.R
     t = dt * np.arange(NT)
 
     # OU noise parameters
@@ -104,7 +114,7 @@ def test(net, task, plant, algo, learning, Nepochs=1000, seed=1):
     h0 = net.f(z0)  # hidden state (rate)
 
     # initial noise
-    noise = torch.as_tensor(npr.randn(1, R).astype(np.float32)) * plant.process_noise
+    noise = torch.as_tensor(npr.randn(1, 2).astype(np.float32)) * plant.process_noise
 
     # save target and stopping positions
     tars, stops = [], []
@@ -113,8 +123,9 @@ def test(net, task, plant, algo, learning, Nepochs=1000, seed=1):
     sa = torch.zeros(Nepochs, NT, S)  # save the inputs for each time bin for plotting
     ha = torch.zeros(Nepochs, NT, N)  # save the hidden states for each time bin for plotting
     ua = torch.zeros(Nepochs, NT, R)  # acceleration
-    va = torch.zeros(Nepochs, NT, R)  # velocity
-    xa = torch.zeros(Nepochs, NT, R)  # position
+    va = torch.zeros(Nepochs, NT, 2)  # velocity
+    xa = torch.zeros(Nepochs, NT, 2)  # position
+    ba = torch.zeros(Nepochs, NT, 2)  # belief
     maxNT, NTlist = 0, []
 
     # train
@@ -123,12 +134,9 @@ def test(net, task, plant, algo, learning, Nepochs=1000, seed=1):
         # pick a condition
         if task.rand_tar:
             x_tar, y_tar = gen_tar(task.dist_bounds, task.angle_bounds)
-            a, b, v, w = plan_traj(x_tar, y_tar, task.v_bounds[-1], dt, NT_ramp)
-            task.s[0, :NT_on] = x_tar
-            task.s[1, :NT_on] = y_tar
-            task.ustar = np.zeros_like(task.s[:2, :].T)
-            task.ustar[NT_on:NT_on+len(a)] = np.array([a, b]).T
-            task.ustar = task.ustar[:NT, :]
+            a, b, v, w = plan_traj(x_tar, y_tar, gain * task.v_bounds[-1], dt, NT_ramp)
+            task.s[0, :NT_on] = x_tar * (1 / 10)
+            task.s[1, :NT_on] = y_tar * (1 / 10)
 
         # target trajectory
         xstar, ystar, phistar = gen_traj(torch.as_tensor([v, w]).T, dt)
@@ -139,15 +147,23 @@ def test(net, task, plant, algo, learning, Nepochs=1000, seed=1):
 
         # initialize activity
         z, h = torch.as_tensor(z0), torch.as_tensor(h0)
-        v_true, v_sense, x, phi = torch.zeros(R, 1), torch.zeros(R, 1), torch.zeros(R, 1), torch.zeros(1)
+        v_true, v_sense, x, phi, x_err, u = \
+            torch.zeros(2, 1), torch.zeros(2, 1), torch.zeros(2, 1), torch.zeros(1), torch.zeros(2, 1), torch.zeros(R, 1),
         s = torch.tensor(task.s)  # input
 
         # save tensors for plotting
-        na = torch.as_tensor(npr.randn(NT, R).astype(np.float32)) * plant.process_noise
+        na = torch.as_tensor(npr.randn(NT, 2).astype(np.float32)) * plant.process_noise
 
         for ti in range(NT):
             # network update
-            s[(S-R):, ti] = v_sense.flatten()        # sensory feedback in the last two channels
+            if feed_pos:
+                s[2:4, ti] = v_sense.flatten()                                              # sensory feedback
+                s[4:, ti] = (torch.tensor((x_tar, y_tar)) - x.squeeze(dim=1)) * (1 / 10)    # position feedback
+            elif feed_belief:
+                s[2:4, ti] = v_sense.flatten()                                          # sensory feedback
+                s[4:, ti] = 1e-1 * u[2:].T.flatten()                                    # belief feedback
+            else:
+                s[2:, ti] = v_sense.flatten()                                           # sensory feedback
             if net.name == 'ppc':
                 Iin = torch.matmul(net.ws, s[:, ti][:, None])
                 Irec = torch.matmul(net.J, h)  #np.matmul(net.J, h)
@@ -155,21 +171,23 @@ def test(net, task, plant, algo, learning, Nepochs=1000, seed=1):
 
             # update activity
             h = (1 - dt) * h + dt * (net.f(z))  # cortex
-            u = net.wr.mm(h)  # output
+            u = gain * net.wr.mm(h)  # output
 
             noise = ou_param_1 * noise + ou_param_2 * na[ti]  # noise is OU process
-            v_true, v_sense, x, phi = plant.forward(u, v_true, x, phi, noise.T, dt)  # actual state
+            v_true, v_sense, x, phi = plant.forward(u[:2], v_true, x, phi, noise.T, dt)  # actual state
+            x_err = (torch.tensor((x_tar, y_tar)) - x.squeeze(dim=1)) if feed_belief else 0
 
             # save values for plotting
-            ha[ei, ti], ua[ei, ti], na[ti], sa[ei, ti], va[ei, ti], xa[ei, ti] = h.T, u.T, noise, s.T[ti], v_true.T, x.T
+            ha[ei, ti], ua[ei, ti], na[ti], sa[ei, ti], va[ei, ti], xa[ei, ti], ba[ei, ti] = \
+                h.T, u.T, noise, s.T[ti], v_true.T, x.T, x_err
 
         # save target and stopping positions
         x_stop, y_stop = xa[ei, ti, 0].item(), xa[ei, ti, 1].item()
         tars.append([x_tar, y_tar, np.sqrt(x_tar ** 2 + y_tar ** 2), np.arctan2(x_tar, y_tar)])     # x, y, dist, angle
         stops.append([x_stop, y_stop, np.sqrt(x_stop ** 2 + y_stop ** 2), np.arctan2(x_stop, y_stop)])
-        prob_correct, prob_shuffled, auc = compute_roc(np.array(tars)[:, :2], np.array(stops)[:, :2])
         NTlist.append(NT)
 
-        print('\r' + str(ei + 1) + '/' + str(Nepochs), end='')
+        # print('\r' + str(ei + 1) + '/' + str(Nepochs), end='')
 
-    return tars, stops, prob_correct, prob_shuffled, auc, NTlist, sa, ha, ua, va, xa
+    prob_correct, prob_shuffled, auc = compute_roc(np.array(tars)[:, :2], np.array(stops)[:, :2])
+    return tars, stops, prob_correct, prob_shuffled, auc, NTlist, sa, ha, ua, va.detach().numpy(), xa.detach().numpy(), ba
