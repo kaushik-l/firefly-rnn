@@ -75,6 +75,12 @@ if do_plotting:
     plt.plot(np.array(tars)[:, 3], np.array(stops)[:, 3], '.')
     plt.xlim((-.6, .6)), plt.ylim((-.6, .6))
 
+    data = torch.load('..//Data//m1-train.pt')
+    plt.figure()
+    # plot learning curve (moving average over 20 trials)
+    plt.plot(np.convolve(np.array(data['learning']['mses']).flatten(), np.ones(20) / 20, mode='same'))
+    plt.yscale('log')
+
 
 #
 # tx = np.array(tars)[:, 1]
