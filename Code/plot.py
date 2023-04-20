@@ -46,13 +46,13 @@ def plot(data, plottype):
         plt.show()
 
     elif plottype == 'processnoise':
-        fig, axs = plt.subplots(1, 3)
+        fig, axs = plt.subplots(1, 4)
 
         for idx, key in enumerate(data.keys()):
             nconds = np.shape(data[key]['auc'])[1]
             prob_correct = data[key]['prob_correct'].mean(axis=0)
             prob_shuffled = data[key]['prob_shuffled'].mean(axis=0)
-            plt.subplot(1, 3, idx + 1)
+            plt.subplot(1, 4, idx + 1)
             for cond in range(nconds):
                 plt.plot(prob_shuffled[cond], prob_correct[cond], alpha=(cond+1)/nconds, color=colors[idx])
             plt.xlabel('Prob shuffled'), plt.ylabel('Prob correct')
@@ -60,7 +60,7 @@ def plot(data, plottype):
             auc = data[key]['auc']
             auc_mu, auc_sem = bootstrap(auc)
             pn = np.linspace(0, 1, 6)
-            plt.subplot(1, 3, 3)
+            plt.subplot(1, 4, 4)
             plt.plot(pn, auc_mu, 'k-')
             plt.fill_between(pn, auc_mu - auc_sem, auc_mu + auc_sem, color=colors[idx])
             plt.ylim((0.5, 1))
@@ -70,13 +70,13 @@ def plot(data, plottype):
         plt.show()
 
     elif plottype == 'sensorynoise':
-        fig, axs = plt.subplots(1, 3)
+        fig, axs = plt.subplots(1, 4)
 
         for idx, key in enumerate(data.keys()):
             nconds = np.shape(data[key]['auc'])[1]
             prob_correct = data[key]['prob_correct'].mean(axis=0)
             prob_shuffled = data[key]['prob_shuffled'].mean(axis=0)
-            plt.subplot(1, 3, idx + 1)
+            plt.subplot(1, 4, idx + 1)
             for cond in range(nconds):
                 plt.plot(prob_shuffled[cond], prob_correct[cond], alpha=(cond+1)/nconds, color=colors[idx])
             plt.xlabel('Prob shuffled'), plt.ylabel('Prob correct')
@@ -84,7 +84,7 @@ def plot(data, plottype):
             auc = data[key]['auc']
             auc_mu, auc_sem = bootstrap(auc)
             pn = np.linspace(0, 5, 6)
-            plt.subplot(1, 3, 3)
+            plt.subplot(1, 4, 4)
             plt.plot(pn, auc_mu, 'k-')
             plt.fill_between(pn, auc_mu - auc_sem, auc_mu + auc_sem, color=colors[idx])
             plt.ylim((0.5, 1))

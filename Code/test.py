@@ -81,6 +81,12 @@ def compute_roc(X_tars, X_stops, maxrewardwin=6, npermutations=100):
     return prob_correct, prob_shuffled, auc
 
 
+def dist2goal(x, tar):
+    dx = x.detach().numpy()[:, 0] - tar[0]
+    dy = x.detach().numpy()[:, 1] - tar[1]
+    return np.sqrt(dx ** 2 + dy ** 2)
+
+
 def test(net, task, plant, algo, learning, feed_pos=False, feed_belief=False,
          db=None, sn=None, pn=None, gain=1, Nepochs=1000, seed=1):
 
@@ -126,6 +132,7 @@ def test(net, task, plant, algo, learning, feed_pos=False, feed_belief=False,
     va = torch.zeros(Nepochs, NT, 2)  # velocity
     xa = torch.zeros(Nepochs, NT, 2)  # position
     ba = torch.zeros(Nepochs, NT, 2)  # belief
+    da = torch.zeros(Nepochs, NT, 1)  # distance to goal
     maxNT, NTlist = 0, []
 
     # train
@@ -135,8 +142,8 @@ def test(net, task, plant, algo, learning, feed_pos=False, feed_belief=False,
         if task.rand_tar:
             x_tar, y_tar = gen_tar(task.dist_bounds, task.angle_bounds)
             a, b, v, w = plan_traj(x_tar, y_tar, gain * task.v_bounds[-1], dt, NT_ramp)
-            task.s[0, :NT_on] = x_tar * (1 / 10)
-            task.s[1, :NT_on] = y_tar * (1 / 10)
+            task.s[0, :NT_on] = x_tar
+            task.s[1, :NT_on] = y_tar
 
         # target trajectory
         xstar, ystar, phistar = gen_traj(torch.as_tensor([v, w]).T, dt)
@@ -158,10 +165,14 @@ def test(net, task, plant, algo, learning, feed_pos=False, feed_belief=False,
             # network update
             if feed_pos:
                 s[2:4, ti] = v_sense.flatten()                                              # sensory feedback
-                s[4:, ti] = (torch.tensor((x_tar, y_tar)) - x.squeeze(dim=1)) * (1 / 10)    # position feedback
+                s[4:, ti] = (torch.tensor((x_tar, y_tar)) - x.squeeze(dim=1))               # position feedback
             elif feed_belief:
                 s[2:4, ti] = v_sense.flatten()                                          # sensory feedback
-                s[4:, ti] = 1e-1 * u[2:].T.flatten()                                    # belief feedback
+                if ti<NT_on:
+                    s[4:, ti] = u[2:].T.flatten()                                           # belief feedback
+                else:
+                    s[4:, ti] = u[2:].T.flatten()
+                    # s[4:, ti] = 0
             else:
                 s[2:, ti] = v_sense.flatten()                                           # sensory feedback
             if net.name == 'ppc':
@@ -186,8 +197,10 @@ def test(net, task, plant, algo, learning, feed_pos=False, feed_belief=False,
         tars.append([x_tar, y_tar, np.sqrt(x_tar ** 2 + y_tar ** 2), np.arctan2(x_tar, y_tar)])     # x, y, dist, angle
         stops.append([x_stop, y_stop, np.sqrt(x_stop ** 2 + y_stop ** 2), np.arctan2(x_stop, y_stop)])
         NTlist.append(NT)
+        da[ei] = torch.tensor(dist2goal(xa[ei, :, :], tars[-1]))[:, None]
 
-        # print('\r' + str(ei + 1) + '/' + str(Nepochs), end='')
+        print('\r' + str(ei + 1) + '/' + str(Nepochs), end='')
 
     prob_correct, prob_shuffled, auc = compute_roc(np.array(tars)[:, :2], np.array(stops)[:, :2])
-    return tars, stops, prob_correct, prob_shuffled, auc, NTlist, sa, ha, ua, va.detach().numpy(), xa.detach().numpy(), ba
+    return tars, stops, prob_correct, prob_shuffled, auc, NTlist, sa, da, ha, ua, va.detach().numpy(), xa.detach().numpy(), ba
+    # return tars, stops, prob_correct, prob_shuffled, auc, NTlist

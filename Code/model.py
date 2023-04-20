@@ -13,7 +13,7 @@ class Network:
         self.N = N  # RNN units
         self.dt = .1  # time bin (in units of tau)
         self.g_in = 1.0  # initial input weight scale
-        self.g_rec = 1.2  # initial recurrent weight scale
+        self.g_rec = 1.0  # initial recurrent weight scale
         self.g_out = 1.0  # initial output weight scale
         self.S = S  # input
         self.R = R  # readout
@@ -46,7 +46,7 @@ class Task:
         # task parameters
         if self.name == 'firefly':
             self.T, self.dt, self.NT = duration, dt, NT
-            self.duration_tar, self.duration_ramp, self.duration_stop = int(3 / dt), int(3 / dt), int(5 / dt)
+            self.duration_tar, self.duration_ramp, self.duration_stop = int(3 / dt), int(3 / dt), int(6 / dt)
             self.num_tar = num_tar
             self.rand_tar = rand_tar
             self.dist_bounds = dist_bounds
@@ -65,7 +65,8 @@ class Task:
         u_reg = self.lambda_u * ((u1 ** 2).sum(dim=-1).mean() + (u1[0] ** 2).sum(dim=-1))
         du_reg = self.lambda_du * ((torch.diff(ut, dim=0) / dt) ** 2).sum(dim=-1).mean()
         v_reg = self.lambda_v * (vt[-self.duration_stop:, :] ** 2).sum(dim=-1).mean() + \
-                1e-2 * (vt[vt[:, 0] > self.v_bounds[-1], 0]).sum() - 1e-2 * (vt[vt[:, 0] < self.v_bounds[0], 0]).sum()
+                1e-2 * (vt[vt[:, 0] > self.v_bounds[-1], 0]).sum() - \
+                1e-2 * (vt[vt[:, 0] < self.v_bounds[0], 0]).sum()
         h_reg = self.lambda_h * ((abs(ht)).sum(dim=-1) ** 2).mean()
         dh_reg = self.lambda_dh * ((torch.diff(ht, dim=0) / dt) ** 2).sum(dim=-1).mean()
         b_reg = self.lambda_b * ((bt - u2) ** 2).mean() / 2
@@ -89,7 +90,7 @@ class Plant:
         v_true, v_sense = [], []
         if self.name == 'joystick':
             # true velocity
-            accel = (1 / 10) * u * (1 + process_noise)  # to compensate for the scaling factor in plan_traj()
+            accel = (1 / 10) * u * (1 + process_noise) - 0.01 * v  # to compensate for the scaling factor in plan_traj()
             v_true = v + accel * dt
             # sensed velocity
             sensory_noise = torch.as_tensor(npr.randn(len(accel), 1)) * self.sensory_noise

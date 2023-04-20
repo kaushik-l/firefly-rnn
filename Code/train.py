@@ -10,6 +10,7 @@ from sklearn.decomposition import PCA
 from scipy.stats.stats import pearsonr
 from scipy.linalg import subspace_angles
 from matplotlib import pyplot as plt
+# torch.autograd.set_detect_anomaly(True)
 
 
 def gen_tar(dist_bounds, angle_bounds):
@@ -125,13 +126,14 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None, rand_tar=Tr
     # optimizer
     opt = None
     if algo.name == 'Adam':
-        opt = torch.optim.Adam([getattr(net, site) for site in sites], lr=algo.lr)
+        opt = torch.optim.Adam([getattr(net, site) for site in learningsites], lr=algo.lr)
 
     # random initialization of hidden state
-    z0 = npr.randn(N, 1)  # hidden state (potential)
+    z0 = np.zeros((N, 1))  # hidden state (potential)
     net.z0 = z0  # save
     h0 = net.f(z0)  # hidden state (rate)
     stoplearning = False
+    wr0 = net.wr.detach().clone()
 
     # initial noise
     noise = torch.as_tensor(npr.randn(1, 2).astype(np.float32)) * plant.process_noise
@@ -152,8 +154,8 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None, rand_tar=Tr
         if task.rand_tar:
             x_tar, y_tar = gen_tar(task.dist_bounds, task.angle_bounds)
             _, _, v, w = plan_traj(x_tar, y_tar, task.v_bounds[-1], dt, NT_ramp)
-            task.s[0, :NT_on] = x_tar * (1 / 10)
-            task.s[1, :NT_on] = y_tar * (1 / 10)
+            task.s[0, :NT_on] = x_tar
+            task.s[1, :NT_on] = y_tar
 
         # target trajectory
         xstar, ystar, phistar = gen_traj(torch.as_tensor([v, w]).T, dt)
@@ -177,20 +179,21 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None, rand_tar=Tr
         na = torch.as_tensor(npr.randn(NT, 2).astype(np.float32)) * plant.process_noise
 
         # errors
-        err = torch.zeros(NT, 2)     # error
+        err = torch.zeros(NT, R)     # error
 
         for ti in range(NT):
             # network update
             if feed_pos:
                 s[2:4, ti] = v_sense.flatten()                                              # sensory feedback
-                s[4:, ti] = (torch.tensor((x_tar, y_tar)) - x.squeeze(dim=1)) * (1 / 10)    # position feedback
+                s[4:, ti] = (torch.tensor((x_tar, y_tar)) - x.squeeze(dim=1))               # position feedback
             elif feed_belief:
                 s[2:4, ti] = v_sense.flatten()                                          # sensory feedback
-                s[4:, ti] = 1e-1 * u[2:].T.flatten()                                    # belief feedback
+                s[4:, ti] = u[2:].T.flatten()                                      # belief feedback
             else:
                 s[2:, ti] = v_sense.flatten()                                           # sensory feedback
+            s2 = s.clone()
             if net.name == 'ppc':
-                Iin = torch.matmul(net.ws, s[:, ti][:, None])
+                Iin = torch.matmul(net.ws, s2[:, ti][:, None])
                 Irec = torch.matmul(net.J, h)
                 z = Iin + Irec      # potential
 
@@ -206,8 +209,15 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None, rand_tar=Tr
             ha[ti], ua[ti], na[ti], sa[ti], va[ti], xa[ti], ba[ti] = h.T, u.T, noise, s.T[ti], v_true.T, x.T, x_err
 
             # error
-            err[ti] = torch.hstack((xstar[ti], ystar[ti])) - x.squeeze(dim=1) if (ti > (NT - NT_stop) or ti < (NT_on)) \
-                else 0
+            if feed_belief:
+                err_pos = torch.hstack((xstar[ti], ystar[ti])) - x.squeeze(dim=1) \
+                    if (ti > (NT - NT_stop) or ti < (NT_on)) else torch.zeros(1, 2).squeeze()
+                err_blf = x_err - u[2:].squeeze() \
+                    if (NT_on < ti < (NT - NT_stop)) else torch.zeros(1, 2).squeeze()
+                err[ti] = torch.hstack((err_pos, err_blf))
+            else:
+                err[ti] = torch.hstack((xstar[ti], ystar[ti])) - x.squeeze(dim=1) if (ti > (NT - NT_stop) or ti < (NT_on)) \
+                    else 0
 
         # save target and stopping positions
         x_stop, y_stop = xa[-1, 0].item(), xa[-1, 1].item()
@@ -236,6 +246,13 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None, rand_tar=Tr
         opt.step()
         opt.zero_grad()
 
+        # reset weights
+        # net.wr.data[:2] = wr0[:2]
+
+        # delta rule
+        # dwr = np.array([torch.outer(ha[idx], err[idx]).detach().numpy() for idx in range(NT)]).mean(axis=0) * 1e-20
+        # net.wr -= dwr.T
+
         # update learning rate
         update_every = int(1e3)
         if ei+1 in np.arange(1, Nepochs, update_every) or ei+1 == Nepochs:
@@ -250,6 +267,9 @@ def train(arch='ppc', N=256, S=4, R=2, task='firefly', num_tar=None, rand_tar=Tr
                 # stoplearning = auc > 0.85
             learning['lr'].append(opt.param_groups[0]['lr'])
             learning['epoch'].append(ei)
+        opt.param_groups[0]['lr'] *= np.exp(np.log(np.minimum(1e-4, opt.param_groups[0]['lr'])
+                                                   / opt.param_groups[0]['lr']) / Nepochs)
+        learning['lr'].append(opt.param_groups[0]['lr'])
 
         # stop learning if criterion is met
         if stoplearning:
