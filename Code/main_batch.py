@@ -5,6 +5,8 @@ import torch
 from matplotlib import pyplot as plt
 from model import Network, Task, Plant, Algorithm
 
+# for training RNN models on HPC cluster
+
 modelname = sys.argv[1]
 seed = int(sys.argv[2]) if len(sys.argv) > 2 else 1
 
