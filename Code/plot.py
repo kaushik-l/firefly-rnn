@@ -2,6 +2,7 @@ from matplotlib import pyplot as plt
 import numpy as np
 import numpy.random as npr
 
+# basic plot functions
 
 def bootstrap(x, median=True, nboots=100):
     nrepeats, nx = np.shape(x)
