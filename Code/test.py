@@ -11,6 +11,7 @@ from scipy.stats.stats import pearsonr
 from scipy.linalg import subspace_angles
 from matplotlib import pyplot as plt
 
+# simulate the models without weight updates
 
 def gen_tar(dist_bounds, angle_bounds):
     dmin, dmax = dist_bounds
