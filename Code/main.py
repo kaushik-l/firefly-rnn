@@ -10,6 +10,9 @@ import seaborn
 import pandas as pd
 import scipy.io
 
+# train RNN models to learn the firefly task
+# models are saved for subsequent testing and plotting
+
 do_training, do_testing, do_plotting = True, True, True
 Nepochs = 500
 
@@ -27,28 +30,28 @@ Nepochs = 500
 if do_training:
     net, task, algo, plant, learning = \
         train(arch='ppc', N=100, S=4, R=2, task='firefly', db=(1, 6), sn=10, pn=0.2,
-              feed_pos=False, feed_belief=False, learningsites=({'wr'}), algo='Adam', Nepochs=10000, lr=1e-4, seed=1)
+              feed_pos=False, feed_belief=False, learningsites=({'wr'}), algo='Adam', Nepochs=50000, lr=1e-4, seed=1)
     # save
     torch.save({'net': net, 'task': task, 'algo': algo, 'plant': plant, 'learning': learning},
                '..//Data//m1-train.pt')
 
     # net, task, algo, plant, learning = \
     #     train(arch='ppc', N=100, S=4, R=2, task='firefly', db=(1, 6), sn=10, pn=0.2,
-    #           feed_pos=False, feed_belief=False, learningsites=({'wr', 'J'}), algo='Adam', Nepochs=10000, lr=1e-4, seed=1)
+    #           feed_pos=False, feed_belief=False, learningsites=({'wr', 'J'}), algo='Adam', Nepochs=50000, lr=1e-4, seed=1)
     # # save
     # torch.save({'net': net, 'task': task, 'algo': algo, 'plant': plant, 'learning': learning},
     #            '..//Data//m2-train.pt')
 
     # net, task, algo, plant, learning = \
     #     train(arch='ppc', N=100, S=4, R=2, task='firefly', db=(1, 6), sn=10, pn=0.2,
-    #           feed_pos=False, feed_belief=True, learningsites=({'wr'}), algo='Adam', Nepochs=10000, lr=1e-4, seed=1)
+    #           feed_pos=False, feed_belief=True, learningsites=({'wr'}), algo='Adam', Nepochs=50000, lr=1e-4, seed=1)
     # # save
     # torch.save({'net': net, 'task': task, 'algo': algo, 'plant': plant, 'learning': learning},
     #            '..//Data//m3-train.pt')
 
     # net, task, algo, plant, learning = \
     #     train(arch='ppc', N=100, S=4, R=2, task='firefly', db=(1, 6), sn=10, pn=0.2,
-    #           feed_pos=False, feed_belief=True, learningsites=({'wr', 'J'}), algo='Adam', Nepochs=10000, lr=1e-4, seed=1)
+    #           feed_pos=False, feed_belief=True, learningsites=({'wr', 'wo'}), algo='Adam', Nepochs=50000, lr=1e-4, seed=1)
     # # save
     # torch.save({'net': net, 'task': task, 'algo': algo, 'plant': plant, 'learning': learning},
     #            '..//Data//m4-train.pt')
