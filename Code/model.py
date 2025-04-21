@@ -4,6 +4,7 @@ from math import sqrt, pi
 import numpy.random as npr
 import torch
 
+# define architecture, task, and algorithm
 
 class Network:
     def __init__(self, name='ppc', N=256, S=4, R=2, seed=1):
