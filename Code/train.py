@@ -12,6 +12,7 @@ from scipy.linalg import subspace_angles
 from matplotlib import pyplot as plt
 # torch.autograd.set_detect_anomaly(True)
 
+# function to train RNN models via BPTT
 
 def gen_tar(dist_bounds, angle_bounds):
     dmin, dmax = dist_bounds
